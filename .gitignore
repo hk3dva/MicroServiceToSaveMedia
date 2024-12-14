@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+venv/
+.env
+
+# IDE
+.vscode/
+.idea/
+
+# Медиафайлы
+media_storage/
+
+# Логи и временные файлы
+*.log
+.DS_Store
+
+# Файлы сборки и дистрибуции
+*.egg-info/
+dist/
+build/
