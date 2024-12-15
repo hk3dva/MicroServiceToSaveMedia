@@ -1,13 +1,15 @@
 import os
 import uuid
 import aiofiles
+import json
 from typing import Dict, Optional
 
 class MediaStorage:
     def __init__(self, base_path: str = "media_storage"):
         self.base_path = base_path
         os.makedirs(base_path, exist_ok=True)
-        self.media_registry: Dict[str, Dict] = {}
+        self.media_registry_path = os.path.join(base_path, "media_registry.json")
+        self.media_registry: Dict[str, Dict] = self.load_media_registry()
 
     async def save_media(self, file, content_type: str):
         # Generate unique filename
@@ -30,6 +32,7 @@ class MediaStorage:
         }
         media_id = unique_filename
         self.media_registry[media_id] = media_info
+        self.save_media_registry()
 
         return media_id, media_info
 
@@ -42,7 +45,18 @@ class MediaStorage:
             try:
                 os.remove(media_info['path'])
                 del self.media_registry[media_id]
+                self.save_media_registry()
                 return True
             except Exception:
                 return False
         return False
+
+    def load_media_registry(self) -> Dict[str, Dict]:
+        if os.path.exists(self.media_registry_path):
+            with open(self.media_registry_path, 'r') as f:
+                return json.load(f)
+        return {}
+
+    def save_media_registry(self) -> None:
+        with open(self.media_registry_path, 'w') as f:
+            json.dump(self.media_registry, f)
