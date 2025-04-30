@@ -1,75 +1,81 @@
 import os
-import uuid
-import aiofiles
-import json
-from typing import Dict, Optional
 import logging
-
+from minio import Minio
+from minio.error import S3Error
+from fastapi import HTTPException
 
 logger = logging.getLogger(__name__)
 
-class MediaStorage:
-    def __init__(self, base_path: str = "media_storage"):
-        self.base_path = base_path
-        os.makedirs(base_path, exist_ok=True)
-        self.media_registry_path = os.path.join(base_path, "media_registry.json")
-        self.media_registry: Dict[str, Dict] = self.load_media_registry()
+class MinioClient:
+    def __init__(self, bucket_name: str = "user.photos"):
+        self.client = Minio(
+                        os.getenv('MINIO_ENDPOINT', 'minio:9000'),
+                        access_key=os.getenv('MINIO_ACCESS_KEY', 'minioadmin'),
+                        secret_key=os.getenv('MINIO_SECRET_KEY', 'minioadmin'),
+                        secure=False  # Используйте True для HTTPS
+                    )
+        self.bucket_name = bucket_name
+        self._ensure_bucket_exists()
 
-    async def save_media(self, file, content_type: str):
-        # Создание уникального имени
-        logger.info("Сохранение контента запушено...")
-        file_extension = file.filename.split('.')[-1] if '.' in file.filename else ''
-        unique_filename = f"{uuid.uuid4()}.{file_extension}"
-        file_path = os.path.join(self.base_path, unique_filename)
+    def _ensure_bucket_exists(self):
+        """
+        Проверяет, существует ли бакет. Если нет, создает его.
+        """
+        try:
+            if not self.client.bucket_exists(self.bucket_name):
+                self.client.make_bucket(self.bucket_name)
+                logger.info(f"Бакет '{self.bucket_name}' создан.")
+        except S3Error as e:
+            logger.error(f"Ошибка при создании бакета: {e}")
+            raise HTTPException(status_code=500, detail=f"Ошибка MinIO: {e}")
 
-        # Сохранение файла
-        async with aiofiles.open(file_path, 'wb') as out_file:
-            content = await file.read()
-            await out_file.write(content)
+    def save(self, file_name, file):
+        """
+        Сохраняет файл в MinIO.
 
-        # Сохранение информации о контенте
-        media_info = {
-            "filename": unique_filename,
-            "original_name": file.filename,
-            "content_type": content_type,
-            "path": file_path,
-            "size": len(content)
-        }
-        media_id = unique_filename
-        self.media_registry[media_id] = media_info
-        self.save_media_registry()
-        logger.info(f"Сохранение контента завершено: {media_id}")
-        return media_id, media_info
+        :param file_name: Имя файла.
+        :param file: Файл (объект UploadFile из FastAPI).
+        """
+        try:
+            self.client.put_object(
+                self.bucket_name,
+                file_name,
+                file.file,
+                length=-1,  # Автоматически определяет длину файла
+                part_size=10 * 1024 * 1024  # 10MB
+            )
+            logger.info(f"Файл '{file_name}' успешно сохранен в бакет '{self.bucket_name}'.")
+        except S3Error as e:
+            logger.error(f"Ошибка при сохранении файла: {e}")
+            raise HTTPException(status_code=500, detail=f"Ошибка MinIO: {e}")
 
-    def get_media_info(self, media_id: str) -> Optional[Dict]:
-        logger.info(f"Получение контента {media_id}")
-        return self.media_registry.get(media_id)
+    def get(self, file_name):
+        """
+        Получает файл из MinIO.
 
-    def delete_media(self, media_id: str) -> bool:
-        logger.info(f"Удаление контента {media_id}")
-        media_info = self.media_registry.get(media_id)
-        if media_info:
-            try:
-                os.remove(media_info['path'])
-                del self.media_registry[media_id]
-                self.save_media_registry()
-                logger.info(f"Контент {media_id} удален")
-                return True
-            except Exception as e:
-                logger.error(f"Произошла ошибка при удалении контента {media_id}: {e}")
-                return False
-        logger.info(f"Контент {media_id} не найден")
-        return False
+        :param file_name: Имя файла.
+        :return: Объект файла.
+        """
+        try:
+            response = self.client.get_object(self.bucket_name, file_name)
+            logger.info(f"Файл '{file_name}' успешно получен из бакета '{self.bucket_name}'.")
+            return response
+        except S3Error as e:
+            logger.error(f"Ошибка при получении файла: {e}")
+            raise HTTPException(status_code=404, detail=f"Файл не найден: {e}")
+        except Exception as e:
+            logger.error(f"Неизвестная ошибка: {e}")
+            raise HTTPException(status_code=500, detail=f"Ошибка MinIO: {e}")
 
-    def load_media_registry(self) -> Dict[str, Dict]:
-        logger.info("Загрузка регистр медиа")
-        if os.path.exists(self.media_registry_path):
-            with open(self.media_registry_path, 'r') as f:
-                return json.load(f)
-        logger.info("Регистр медиа не найден")
-        return {}
+    def delete(self, file_name):
+        """
+        Удаляет файл из MinIO.
 
-    def save_media_registry(self) -> None:
-        logger.info("Сохраняю регистр медиа")
-        with open(self.media_registry_path, 'w') as f:
-            json.dump(self.media_registry, f)
+        :param file_name: Имя файла.
+        """
+        try:
+            self.client.remove_object(self.bucket_name, file_name)
+            logger.info(f"Файл '{file_name}' успешно удален из бакета '{self.bucket_name}'.")
+        except S3Error as e:
+            logger.error(f"Ошибка при удалении файла: {e}")
+            raise HTTPException(status_code=500, detail=f"Ошибка MinIO: {e}")

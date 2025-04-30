@@ -1,13 +1,10 @@
-import aiofiles
+import uuid
 from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.responses import FileResponse, JSONResponse
-from storage import MediaStorage
+from fastapi.responses import StreamingResponse, JSONResponse
+from storage import MinioClient
 import logging
 
 app = FastAPI(title="Media Storage Microservice")
-media_storage = MediaStorage()
-
-
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
@@ -18,41 +15,44 @@ logger = logging.getLogger(__name__)
 
 
 @app.post("/upload")
-async def upload_media(file: UploadFile = File(...)):
+async def upload_media(file: UploadFile = File(...), backet_name='user.photos'):
     """
     Endpoint to upload media content (photo, video, music)
     Returns media ID and metadata
     """
-    logger.info("Поступил запрос на загрузку контента")
-    media_id, media_info = await media_storage.save_media(file, file.content_type)
-    logger.info("Контент загружен")
-    return {
-        "media_id": media_id,
-        "metadata": media_info
-    }
+    file_id = str(uuid.uuid4())
+    file_name = f"{file_id}_{file.filename}"
+    logger.info(f"файл получен {file_name}")
+    try:
+        logger.info('Отправка в хранилище')
+        MinioClient(backet_name).save(file_name, file)
+
+        return JSONResponse(status_code=200, content={
+                    "media_id": file_name,
+                })
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/media/{media_id}")
-async def get_media(media_id: str):
+async def get_media(media_id: str, backet_name='user.photos'):
     """
     Endpoint to retrieve media file or metadata
     """
     logger.info("Поступил запрос на получение контента")
-    media_info = media_storage.get_media_info(media_id)
-    if not media_info:
-        raise HTTPException(status_code=404, detail="Media not found")
-
-    logger.info("Контент отрпавлен")
-    return FileResponse(media_info['path'], 
-    media_type=media_info['content_type'], 
-    filename=media_info['original_name'])
+    file = MinioClient(backet_name).get(media_id)
+    return StreamingResponse(
+        file.stream(32 * 1024),  # Чтение файла блоками по 32 КБ
+        media_type="application/octet-stream",  # Универсальный тип для бинарных данных
+        headers={"Content-Disposition": f"attachment; filename={media_id}"}
+    )
 
 @app.delete("/media/{media_id}")
-async def delete_media(media_id: str):
+async def delete_media(media_id: str, backet_name='user.photos'):
     """
     Endpoint to delete media by ID
     """
     logger.info("Поступил запрос на удаление контента")
-    success = media_storage.delete_media(media_id)
+    success = MinioClient(backet_name).delete_media(media_id)
     if not success:
         logger.error(f"Произошла ошибка при удалении контента {media_id}")
         raise HTTPException(status_code=404, detail="Media not found")
